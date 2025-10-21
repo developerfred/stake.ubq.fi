@@ -1,4 +1,5 @@
-import { useAccount, usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { useAppKitAccount } from "@reown/appkit/react";
+import { usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import erc20Abi from "../abis/erc20.ts";
 import { stakingContract } from "../constants/contracts.ts";
 import { BaseError, formatUnits, parseUnits } from "viem";
@@ -13,7 +14,7 @@ interface PoolDisplayProps {
 }
 
 export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
-  const account = useAccount();
+  const { address, isConnected } = useAppKitAccount();
   const { writeContract } = useWriteContract();
   const publicClient = usePublicClient();
 
@@ -31,11 +32,13 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
     functionName: "getStakingSettings",
     args: [],
   });
+  
   const poolInfo = useReadContract({
     ...stakingContract,
     functionName: "getStakingPoolInfo",
     args: [poolId],
   });
+  
   const lpTokenAddress = poolInfo.data?.lpToken;
   const lpTokenInfo = useErc20Token(lpTokenAddress);
   const rewardTokenAddress = stakingSettings.data?.[0];
@@ -44,17 +47,18 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
   const userInfo = useReadContract({
     ...stakingContract,
     functionName: "getStakingUserInfo",
-    args: [poolId, account.address ?? "0x0"],
+    args: [poolId, address ?? "0x0"],
     query: {
-      enabled: account.isConnected && !!account.address,
+      enabled: isConnected && !!address,
     },
   });
+  
   const pendingRewards = useReadContract({
     ...stakingContract,
     functionName: "getPendingStakingRewards",
-    args: [poolId, account.address ?? "0x0"],
+    args: [poolId, address ?? "0x0"],
     query: {
-      enabled: account.isConnected && !!account.address,
+      enabled: isConnected && !!address,
     },
   });
 
@@ -62,25 +66,34 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
     abi: erc20Abi,
     address: lpTokenAddress,
     functionName: "allowance",
-    args: [account.address ?? "0x0", stakingContract.address],
+    args: [address ?? "0x0", stakingContract.address],
     query: {
-      enabled: account.isConnected && !!account.address && !!lpTokenAddress,
+      enabled: isConnected && !!address && !!lpTokenAddress,
     },
   });
+  
   const balance = useReadContract({
     abi: erc20Abi,
     address: lpTokenAddress,
     functionName: "balanceOf",
-    args: [account.address ?? "0x0"],
+    args: [address ?? "0x0"],
     query: {
-      enabled: account.isConnected && !!account.address && !!lpTokenAddress,
+      enabled: isConnected && !!address && !!lpTokenAddress,
     },
   });
 
   const onSuccess = async (hash: `0x${string}`) => {
-    if (!publicClient) return;
+    if (!publicClient) {
+      setErrorMessage("No public client available");
+      return;
+    }
+    
     try {
-      const receipt = await waitForTransactionReceipt(publicClient, { hash });
+      const receipt = await waitForTransactionReceipt(publicClient, { 
+        hash,
+        timeout: 60_000,
+      });
+      
       if (receipt.status === "success") {
         setSuccessMessage("Transaction confirmed");
       } else {
@@ -94,7 +107,8 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
 
   const onError = (error: unknown) => {
     if (error instanceof BaseError) {
-      setErrorMessage(error.shortMessage);
+      const shortMessage = error.shortMessage || error.message;
+      setErrorMessage(shortMessage);
     } else if (error instanceof Error) {
       setErrorMessage(error.message);
     } else {
@@ -190,29 +204,37 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
     balance.refetch();
   };
 
+  // Error handling
   if (
     stakingSettings.error ||
     lpTokenInfo.error ||
     rewardTokenInfo.error ||
     poolInfo.error ||
-    (account.isConnected && (pendingRewards.error || userInfo.error || allowance.error || balance.error))
+    (isConnected && (pendingRewards.error || userInfo.error || allowance.error || balance.error))
   ) {
-    return <div className="pool-container">Loading failed...</div>;
+    return (
+      <div className="pool-container">
+        <div style={{ padding: "20px", color: "#ff6666" }}>
+          Failed to load pool data. Please check your connection and try again.
+        </div>
+      </div>
+    );
   }
 
+  // Loading state
   if (
     stakingSettings.data === undefined ||
     lpTokenInfo.data === undefined ||
     rewardTokenInfo.data === undefined ||
     poolInfo.data === undefined ||
-    (account.isConnected &&
+    (isConnected &&
       (pendingRewards.data === undefined || userInfo.data === undefined || allowance.data === undefined || balance.data === undefined))
   ) {
     return (
       <div className="pool-container">
         <div className="loading-container">
           <div className="spinner button-spinner"></div>
-          <span>Loading...</span>
+          <span>Loading pool information...</span>
         </div>
       </div>
     );
@@ -226,7 +248,7 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
   const rewardPerBlock = stakingSettings.data[3];
   const poolAllocPoints = poolInfo.data.allocationPoints;
   const totalAllocPoints = stakingSettings.data[6];
-  const blocksPerDay = 7167; // approx for 12s block time on Ethereum mainnet
+  const blocksPerDay = 7167;
   const poolRewardPerDay =
     totalAllocPoints > 0n
       ? Number(formatUnits((rewardPerBlock * poolAllocPoints) / totalAllocPoints, rewardTokenInfo.data.decimals)) * blocksPerDay
@@ -264,7 +286,7 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
               className="action-button"
               disabled={
                 isWritingContract ||
-                !account.isConnected ||
+                !isConnected ||
                 balance.data === undefined ||
                 isAllowanceSufficient ||
                 !parsedStakeAmount ||
@@ -281,7 +303,7 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
               className="action-button"
               disabled={
                 isWritingContract ||
-                !account.isConnected ||
+                !isConnected ||
                 balance.data === undefined ||
                 !isAllowanceSufficient ||
                 !parsedStakeAmount ||
@@ -311,7 +333,7 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
               className="action-button"
               disabled={
                 isWritingContract ||
-                !account.isConnected ||
+                !isConnected ||
                 !userInfo.data ||
                 balance.data === undefined ||
                 !parsedUnstakeAmount ||
@@ -341,7 +363,7 @@ export function PoolDisplay({ poolId = 0n }: PoolDisplayProps) {
             onClick={claim}
             isLoading={isClaiming}
             isLoadingText="Claiming rewards..."
-            disabled={isWritingContract || !account.isConnected || !pendingRewards.data}
+            disabled={isWritingContract || !isConnected || !pendingRewards.data}
           >
             Claim Rewards
           </Button>
